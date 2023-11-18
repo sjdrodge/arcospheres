@@ -2,9 +2,10 @@ use crate::Polarity::*;
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
+use std::fmt;
 use std::ops::{Add, Index, IndexMut};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Polarity {
     Lambda,
     Xi,
@@ -16,12 +17,39 @@ enum Polarity {
     Omega,
 }
 
-const POLARITY_VARIANT_COUNT: usize = 8;
+const POLARITY_VARIANT_COUNT: usize = 8; // nightly: std::mem::variant_count<Polarity>()
+const POLARITY_LIST: [Polarity; POLARITY_VARIANT_COUNT] =
+    [Lambda, Xi, Epsilon, Phi, Zeta, Theta, Gamma, Omega];
 
-#[derive(Debug)]
+impl fmt::Debug for Polarity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Lambda => "λ",
+                Xi => "ξ",
+                Epsilon => "ε",
+                Phi => "φ",
+                Zeta => "ζ",
+                Theta => "θ",
+                Gamma => "γ",
+                Omega => "ω",
+            }
+        )
+    }
+}
+
+#[derive(Clone)]
 struct Transformation {
     inputs: Vec<Polarity>,
     outputs: Vec<Polarity>,
+}
+
+impl fmt::Debug for Transformation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({:?} 🠖 {:?})", self.inputs, self.outputs)
+    }
 }
 
 impl Transformation {
@@ -30,8 +58,33 @@ impl Transformation {
     }
 }
 
+type ArcoStateInt = u8;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ArcoState([u16; POLARITY_VARIANT_COUNT]);
+struct ArcoState([ArcoStateInt; POLARITY_VARIANT_COUNT]);
+
+// FIXME: holy moly this is disgusting, have some pride.
+impl fmt::Display for ArcoState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut is_first_item = true;
+        let ArcoState(internal_self) = self;
+        write!(f, "{{")?;
+        for i in 0..internal_self.len() {
+            if internal_self[i] > 0 {
+                if !is_first_item {
+                    write!(f, ", ")?;
+                }
+                if internal_self[i] > 1 {
+                    write!(f, "{}", internal_self[i])?;
+                }
+                write!(f, "{:?}", POLARITY_LIST[i])?;
+                is_first_item = false;
+            }
+        }
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
 
 impl ArcoState {
     fn new() -> Self {
@@ -40,7 +93,7 @@ impl ArcoState {
 }
 
 impl Index<usize> for ArcoState {
-    type Output = u16;
+    type Output = ArcoStateInt;
     fn index(&self, index: usize) -> &Self::Output {
         let ArcoState(self_internal) = self;
         &self_internal[index]
@@ -66,8 +119,8 @@ impl Add for ArcoState {
     }
 }
 
-impl FromIterator<(Polarity, u16)> for ArcoState {
-    fn from_iter<I: IntoIterator<Item = (Polarity, u16)>>(iter: I) -> Self {
+impl FromIterator<(Polarity, ArcoStateInt)> for ArcoState {
+    fn from_iter<I: IntoIterator<Item = (Polarity, ArcoStateInt)>>(iter: I) -> Self {
         let ArcoState(mut result) = ArcoState::new();
         for (polarity, count) in iter {
             result[polarity as usize] += count;
@@ -91,13 +144,15 @@ impl From<ArcoState> for ArcoSearchState {
     }
 }
 
+type ScoreInt = u8;
+// TODO: become generic over score functions
 struct ScoredSearchState {
     search_state: ArcoSearchState,
-    score: u16,
+    score: ScoreInt,
 }
 
 impl ScoredSearchState {
-    fn new(search_state: ArcoSearchState, score: u16) -> Self {
+    fn new(search_state: ArcoSearchState, score: ScoreInt) -> Self {
         ScoredSearchState {
             search_state,
             score,
@@ -123,6 +178,12 @@ impl Ord for ScoredSearchState {
     fn cmp(&self, other: &Self) -> Ordering {
         self.score.cmp(&other.score)
     }
+}
+
+fn parity(state: &ArcoState) -> (ArcoStateInt, ArcoStateInt) {
+    let parity1 = (state[0] % 4 + state[1] % 4 + state[2] % 4 + state[3] % 4) % 4;
+    let parity2 = (state[4] % 4 + state[5] % 4 + state[6] % 4 + state[7] % 4) % 4;
+    (parity1, parity2)
 }
 
 fn generate_transformed_state(
@@ -157,53 +218,66 @@ fn generate_transformed_state(
 fn generate_neighbors(
     node: &ArcoSearchState,
     transformations: &[Transformation],
-) -> Vec<ArcoSearchState> {
+) -> Vec<(ArcoSearchState, Transformation)> {
     let mut result = vec![];
     for t in transformations {
         if let Some(new_state) = generate_transformed_state(node, t) {
-            result.push(new_state)
+            result.push((new_state, t.clone())) // TODO: this clone is ridiculous
         }
     }
     result
+}
+
+struct Path {
+    initial_state: ArcoState,
+    final_state: ArcoState,
+    transformations: Vec<Transformation>,
 }
 
 fn path(
-    ancestors: HashMap<ArcoSearchState, ArcoSearchState>,
+    ancestors: HashMap<ArcoSearchState, (ArcoSearchState, Transformation)>,
     mut current_state: ArcoSearchState,
-) -> Vec<ArcoSearchState> {
-    let mut result = vec![current_state.clone()];
+) -> Path {
+    let mut result = Vec::new();
+    let final_state = current_state.clone();
     while ancestors.contains_key(&current_state) {
-        current_state = ancestors.get(&current_state).unwrap().clone();
-        result.push(current_state.clone());
+        let (s, t) = ancestors.get(&current_state).unwrap().clone();
+        current_state = s;
+        result.push(t);
     }
-    result
+    result.reverse();
+    Path {
+        initial_state: current_state.state + final_state.catalysts,
+        final_state: final_state.state,
+        transformations: result,
+    }
 }
 
-fn search(
-    initial_state: ArcoState,
-    goal_state: ArcoState,
-    transformations: &[Transformation],
-) -> Option<Vec<ArcoSearchState>> {
+fn search(start: ArcoState, goal: ArcoState, transformations: &[Transformation]) -> Option<Path> {
+    if parity(&start) != parity(&goal) {
+        return None;
+    }
+
     let mut open_set: BinaryHeap<Reverse<ScoredSearchState>> = BinaryHeap::new();
     open_set.push(Reverse(ScoredSearchState::new(
-        ArcoSearchState::from(initial_state.clone()),
+        ArcoSearchState::from(start.clone()),
         0,
     )));
-    let mut ancestors: HashMap<ArcoSearchState, ArcoSearchState> = HashMap::new();
-    let mut scores: HashMap<ArcoSearchState, u16> =
-        HashMap::from([(ArcoSearchState::from(initial_state), 0)]);
+    let mut ancestors: HashMap<ArcoSearchState, (ArcoSearchState, Transformation)> = HashMap::new();
+    let mut scores: HashMap<ArcoSearchState, ScoreInt> =
+        HashMap::from([(ArcoSearchState::from(start), 0)]);
 
     while !open_set.is_empty() {
-        let current_state: ArcoSearchState = open_set.pop().unwrap().0.search_state;
-        if current_state.state == goal_state.clone() + current_state.catalysts.clone() {
-            return Some(path(ancestors, current_state));
+        let current: ArcoSearchState = open_set.pop().unwrap().0.search_state;
+        if current.state == goal.clone() + current.catalysts.clone() {
+            return Some(path(ancestors, current));
         }
-        for neighbor in generate_neighbors(&current_state, transformations) {
-            let current_neighbor_score = scores.get(&current_state).unwrap() + 1;
+        for (neighbor, transformation) in generate_neighbors(&current, transformations) {
+            let current_neighbor_score = scores.get(&current).unwrap() + 1;
             if !scores.contains_key(&neighbor)
                 || current_neighbor_score < *scores.get(&neighbor).unwrap()
             {
-                ancestors.insert(neighbor.clone(), current_state.clone());
+                ancestors.insert(neighbor.clone(), (current.clone(), transformation));
                 scores.insert(neighbor.clone(), current_neighbor_score);
 
                 open_set.push(Reverse(ScoredSearchState::new(
@@ -215,6 +289,16 @@ fn search(
         }
     }
     None
+}
+
+fn print_search_result(path: Option<Path>) {
+    if let Some(path) = path {
+        println!("initial state: {}", path.initial_state,);
+        println!("final state: {}", path.final_state);
+        println!("path: {:#?}", path.transformations);
+    } else {
+        println!("No solution found.");
+    }
 }
 
 fn main() {
@@ -237,12 +321,23 @@ fn main() {
         Transformation::new(vec![Epsilon, Omega], vec![Lambda, Gamma]),
     ];
 
-    println!("{:?}", transformations);
+    let start = ArcoState::from_iter([(Lambda, 4)]);
+    let goal = ArcoState::from_iter([(Zeta, 2), (Omega, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
 
-    let initial_state = ArcoState::from_iter([(Lambda, 2)]);
-    let goal_state = ArcoState::from_iter([(Zeta, 1), (Omega, 1)]);
+    let start = ArcoState::from_iter([(Phi, 4)]);
+    let goal = ArcoState::from_iter([(Zeta, 2), (Omega, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
 
-    println!("{:?}, {:?}", initial_state, goal_state);
+    let start = ArcoState::from_iter([(Lambda, 2)]);
+    let goal = ArcoState::from_iter([(Phi, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
 
-    println!("{:?}", search(initial_state, goal_state, &transformations));
+    let start = ArcoState::from_iter([(Phi, 2)]);
+    let goal = ArcoState::from_iter([(Lambda, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
 }
