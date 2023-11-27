@@ -144,18 +144,52 @@ impl From<ArcoState> for ArcoSearchState {
     }
 }
 
-type ScoreInt = u8;
+impl ArcoSearchState {
+    fn catalyst_count(&self) -> ScoreInt {
+        let mut result = 0;
+        let ArcoState(internal_state) = self.state;
+        for elem in internal_state {
+            result += elem as ScoreInt;
+        }
+        result
+    }
+}
+
+type ScoreInt = u16;
+
+#[derive(Clone, PartialEq, Eq)]
+struct Score {
+    time: ScoreInt,
+    catalysts: ScoreInt,
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.time.cmp(&other.time) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Equal => self.catalysts.cmp(&other.catalysts),
+            Ordering::Greater => Ordering::Greater,
+        }
+    }
+}
+
 // TODO: become generic over score functions
 struct ScoredSearchState {
     search_state: ArcoSearchState,
-    score: ScoreInt,
+    score: Score,
 }
 
 impl ScoredSearchState {
-    fn new(search_state: ArcoSearchState, score: ScoreInt) -> Self {
+    fn new(search_state: ArcoSearchState, time: ScoreInt, catalysts: ScoreInt) -> Self {
         ScoredSearchState {
             search_state,
-            score,
+            score: Score { time, catalysts },
         }
     }
 }
@@ -170,7 +204,7 @@ impl Eq for ScoredSearchState {}
 
 impl PartialOrd for ScoredSearchState {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.score.cmp(&other.score))
+        Some(self.cmp(other))
     }
 }
 
@@ -262,10 +296,16 @@ fn search(start: ArcoState, goal: ArcoState, transformations: &[Transformation])
     open_set.push(Reverse(ScoredSearchState::new(
         ArcoSearchState::from(start.clone()),
         0,
+        0,
     )));
     let mut ancestors: HashMap<ArcoSearchState, (ArcoSearchState, Transformation)> = HashMap::new();
-    let mut scores: HashMap<ArcoSearchState, ScoreInt> =
-        HashMap::from([(ArcoSearchState::from(start), 0)]);
+    let mut scores: HashMap<ArcoSearchState, Score> = HashMap::from([(
+        ArcoSearchState::from(start),
+        Score {
+            time: 0,
+            catalysts: 0,
+        },
+    )]);
 
     while !open_set.is_empty() {
         let current: ArcoSearchState = open_set.pop().unwrap().0.search_state;
@@ -273,16 +313,20 @@ fn search(start: ArcoState, goal: ArcoState, transformations: &[Transformation])
             return Some(path(ancestors, current));
         }
         for (neighbor, transformation) in generate_neighbors(&current, transformations) {
-            let current_neighbor_score = scores.get(&current).unwrap() + 1;
+            let current_neighbor_score = Score {
+                time: scores.get(&current).unwrap().time + 1,
+                catalysts: neighbor.catalyst_count(),
+            };
             if !scores.contains_key(&neighbor)
                 || current_neighbor_score < *scores.get(&neighbor).unwrap()
             {
                 ancestors.insert(neighbor.clone(), (current.clone(), transformation));
-                scores.insert(neighbor.clone(), current_neighbor_score);
+                scores.insert(neighbor.clone(), current_neighbor_score.clone());
 
                 open_set.push(Reverse(ScoredSearchState::new(
                     neighbor,
-                    current_neighbor_score,
+                    current_neighbor_score.time,
+                    current_neighbor_score.catalysts,
                 )));
                 //TODO: avoid re-insertion
             }
@@ -340,4 +384,35 @@ fn main() {
     let goal = ArcoState::from_iter([(Lambda, 2)]);
     println!("objective: {} 🠖 {}", start, goal);
     print_search_result(search(start, goal, &transformations));
+
+    let start = ArcoState::from_iter([(Zeta, 2), (Theta, 2)]);
+    let goal = ArcoState::from_iter([(Lambda, 2), (Xi, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
+
+    let start = ArcoState::from_iter([(Epsilon, 1), (Phi, 1)]);
+    let goal = ArcoState::from_iter([(Lambda, 1), (Xi, 1)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
+
+    let start = ArcoState::from_iter([(Zeta, 2), (Theta, 2)]);
+    let goal = ArcoState::from_iter([(Epsilon, 2), (Phi, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
+
+    let start = ArcoState::from_iter([(Epsilon, 2), (Phi, 2)]);
+    let goal = ArcoState::from_iter([(Zeta, 2), (Theta, 2)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
+
+    let start = ArcoState::from_iter([(Xi, 1), (Theta, 1), (Phi, 1), (Omega, 1)]);
+    let goal = ArcoState::from_iter([(Lambda, 1), (Zeta, 1), (Epsilon, 1), (Gamma, 1)]);
+    println!("objective: {} 🠖 {}", start, goal);
+    print_search_result(search(start, goal, &transformations));
 }
+
+// TODO: stop after a certain depth
+// TODO: more static analysis?
+// TODO: add heuristic stuff
+// TODO: split into multiple files?
+// TODO: care about inversion time being 10x?
